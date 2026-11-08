@@ -1,0 +1,54 @@
+# Small first run to measure runtime before spending credits on the full sweep.
+# Modal overrides CSV/output paths and device; the rest is the normal pipeline.
+[run]
+root = ".."
+csv_path = "data/creilov.csv"
+output_dir = "outputs/modal-pilot"
+seed = 42
+device = "cuda"
+train_split = "random"
+
+[oracle]
+kind = "one_hot_mlp"
+ensemble_size = 1
+hidden_dim = 128
+hidden_layers = 1
+dropout = 0.1
+
+[predictor]
+kind = "one_hot_mlp"
+ensemble_size = 1
+hidden_dim = 128
+hidden_layers = 1
+dropout = 0.1
+
+[oracle_training]
+epochs = 3
+batch_size = 256
+learning_rate = 0.001
+weight_decay = 0.01
+patience = 2
+max_train = 2000
+
+[predictor_training]
+epochs = 3
+batch_size = 256
+learning_rate = 0.001
+weight_decay = 0.01
+patience = 2
+max_train = 2000
+
+[guidance]
+method = "tag"
+generator = "esmc_300m" # public first check; use esm3-open for the paper's model
+threshold = 4.1
+generator_temperature = 0.7
+predictor_temperature = 1.0
+min_sigma = 0.05
+mask_fraction = 1.0
+position = 7
+
+[evaluation]
+mask_fractions = [0.0, 0.5]
+top_k = 100
+max_rows = 2000

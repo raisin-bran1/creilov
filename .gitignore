@@ -1,0 +1,54 @@
+# Python environments and bytecode
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Package builds
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Test, lint, and type-checker caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.pyright/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# Downloaded datasets (keep provenance and download instructions versioned)
+/data/*
+!/data/README.md
+!/data/.gitkeep
+
+# Generated experiment artifacts and model caches
+/outputs/
+/results/
+/checkpoints/
+/logs/
+/wandb/
+/lightning_logs/
+/.cache/
+*.log
+
+# Local secrets (allow a shareable configuration template)
+.env
+.env.*
+!.env.example
+
+# Local editor and operating-system files
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Keep uv.lock and .python-version versioned for reproducibility.

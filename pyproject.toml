@@ -1,0 +1,23 @@
+[project]
+name = "creilov"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Brian Zhou", email = "brianzhou@berkeley.edu" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "proteingen",
+    "transformers==4.48.1",
+]
+
+[project.scripts]
+creilov = "creilov.workflow:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+proteingen = { path = "../proteingen", editable = true }
