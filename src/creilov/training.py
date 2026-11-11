@@ -3,7 +3,10 @@
 Index legend: B batch, P token position, V vocabulary, N dataset rows.
 """
 
+import hashlib
+import json
 import math
+from pathlib import Path
 import random
 from dataclasses import asdict
 
@@ -79,6 +82,96 @@ def predict(
     return torch.cat(outputs).numpy()
 
 
+def select_training_indices(
+    split: Split, train_cfg: TrainingConfig, seed: int
+) -> list[int]:
+    """Uniform, fixed-seed sample without replacement from the training pool."""
+    indices = list(split.train)
+    random.Random(seed).shuffle(indices)
+    return indices[: train_cfg.max_train] if train_cfg.max_train else indices
+
+
+def member_signature(
+    model_cfg: ModelConfig,
+    train_cfg: TrainingConfig,
+    train_indices: list[int],
+    validation_indices: list[int],
+    *,
+    noisy: bool,
+    seed: int,
+    length: int,
+    data_key: str,
+) -> str:
+    """Hash everything a single member's fit depends on, except member count.
+
+    Excluding ensemble_size lets a larger re-run reuse members already trained
+    under identical settings; any other change invalidates the cache.
+    """
+    model = {k: v for k, v in asdict(model_cfg).items() if k != "ensemble_size"}
+    payload = json.dumps(
+        {
+            "model": model,
+            "training": asdict(train_cfg),
+            "train_indices": train_indices,
+            "validation_indices": validation_indices,
+            "noisy": noisy,
+            "seed": seed,
+            "length": length,
+            "data_key": data_key,
+        },
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def member_path(resume_dir: Path, member_index: int) -> Path:
+    return resume_dir / f"member_{member_index:03d}.pt"
+
+
+def load_member(resume_dir: Path, member_index: int, signature: str) -> dict | None:
+    """Return a cached member only when it was fit under the same signature."""
+    path = member_path(resume_dir, member_index)
+    if not path.is_file():
+        return None
+    try:
+        cached = torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as error:  # truncated by an interrupted write, or stale format
+        print(f"member={member_index} ignoring unreadable cache: {error}", flush=True)
+        return None
+    if cached.get("signature") != signature:
+        print(f"member={member_index} ignoring cache from different settings", flush=True)
+        return None
+    return cached
+
+
+def save_member(
+    resume_dir: Path,
+    member_index: int,
+    signature: str,
+    state: dict,
+    history: list[dict],
+) -> None:
+    """Write atomically so an interrupted save cannot leave a half file behind."""
+    resume_dir.mkdir(parents=True, exist_ok=True)
+    final = member_path(resume_dir, member_index)
+    staging = final.with_suffix(".pt.tmp")
+    torch.save({"signature": signature, "state": state, "history": history}, staging)
+    staging.replace(final)
+
+
+def clear_members(resume_dir: Path) -> int:
+    """Drop the per-member cache once a stage no longer needs to resume."""
+    if not resume_dir.is_dir():
+        return 0
+    removed = 0
+    for path in sorted(resume_dir.glob("member_*.pt*")):
+        path.unlink()
+        removed += 1
+    if not any(resume_dir.iterdir()):
+        resume_dir.rmdir()
+    return removed
+
+
 def fit(
     dataset,
     split: Split,
@@ -89,21 +182,40 @@ def fit(
     seed: int,
     device: str,
     min_sigma: float,
+    resume_dir: Path | None = None,
+    data_key: str = "",
 ):
     seed_all(seed)
-    indices = list(split.train)
-    random.Random(seed).shuffle(indices)
-    if train_cfg.max_train:
-        indices = indices[: train_cfg.max_train]
+    indices = select_training_indices(split, train_cfg, seed)
     train, validation = subset(dataset, indices), subset(dataset, split.validation)
-    model = FluorescenceEnsemble(
-        model_cfg, len(dataset.sequences[0]) + 2, min_sigma
-    ).to(device)
+    length = len(dataset.sequences[0]) + 2
+    model = FluorescenceEnsemble(model_cfg, length, min_sigma).to(device)
     model.label_mean.copy_(train.labels.mean())
     model.label_scale.copy_(train.labels.std(unbiased=False).clamp_min(1e-6))
+    signature = member_signature(
+        model_cfg,
+        train_cfg,
+        indices,
+        split.validation,
+        noisy=noisy,
+        seed=seed,
+        length=length,
+        data_key=data_key,
+    )
     histories = []
     for member_index, member in enumerate(model.members):
         seed_all(seed + member_index)
+        cached = (
+            load_member(resume_dir, member_index, signature) if resume_dir else None
+        )
+        if cached is not None:
+            missing, unexpected = member.load_state_dict(cached["state"], strict=False)
+            assert not unexpected and all(
+                k.startswith("embed_model.") for k in missing
+            )
+            histories.append(cached["history"])
+            print(f"member={member_index} restored from cache", flush=True)
+            continue
         train_loader = make_loader(
             train, member, train_cfg.batch_size, noisy=noisy, shuffle=True
         )
@@ -180,13 +292,10 @@ def fit(
         missing, unexpected = member.load_state_dict(best_state, strict=False)
         assert not unexpected and all(k.startswith("embed_model.") for k in missing)
         histories.append(history)
+        if resume_dir is not None:
+            save_member(resume_dir, member_index, signature, best_state, history)
     model.eval()
-    val_predictions = predict(model, validation, train_cfg.batch_size)
-    # Clean validation residuals give a nonzero floor, including for M=1.
-    residual_mse = float(
-        np.mean((val_predictions[:, 0] - validation.labels.numpy()) ** 2)
-    )
-    model.residual_variance.fill_(max(residual_mse, min_sigma**2))
+    residual_mse = calibrate_variance(model, validation, train_cfg.batch_size)
     for parameter in model.parameters():
         parameter.requires_grad_(False)  # input gradients remain enabled for TAG
     metadata = {
@@ -199,6 +308,18 @@ def fit(
         "validation_residual_variance": residual_mse,
     }
     return model, metadata
+
+
+def calibrate_variance(
+    model: FluorescenceEnsemble, validation, batch_size: int
+) -> float:
+    """Estimate each ensemble's own residual floor using clean validation only."""
+    val_predictions = predict(model, validation, batch_size)
+    residual_mse = float(
+        np.mean((val_predictions[:, 0] - validation.labels.numpy()) ** 2)
+    )
+    model.residual_variance.fill_(max(residual_mse, model.min_sigma**2))
+    return residual_mse
 
 
 def correlation(a, b):

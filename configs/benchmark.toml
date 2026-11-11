@@ -1,0 +1,32 @@
+[run]
+stage = "benchmark"
+root = ".."
+csv_path = "/data/creilov.csv" # benchmark always uses the S2-only loader
+output_dir = "/runs/benchmark/default" # /runs mirrors outputs/: <stage>/<run-id>
+seed = 42
+device = "cuda"
+
+# Reuse only model/optimizer/training budgets; benchmark owns its data splits.
+# Ensemble size is overridden to one: four splits x two roles = eight fits.
+[training_configs]
+oracle = "train_oracle.toml"
+predictor = "train_predictor.toml"
+
+[splits]
+train_fraction = 0.8
+validation_fraction = 0.1
+distance_train_max = 7
+distance_validation_max = 8
+activity_train_quantile = 0.8
+activity_validation_quantile = 0.9
+validation_positions = [60]
+test_positions = [98]
+
+[guidance]
+threshold = 4.1
+min_sigma = 0.05
+
+[evaluation]
+mask_fractions = [0.0, 0.5, 0.9]
+top_k = 100
+max_rows = 0

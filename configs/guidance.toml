@@ -1,0 +1,26 @@
+[run]
+stage = "guidance"
+root = ".."
+csv_path = "/data/creilov_combined.csv" # verifies the predictor's training-data fingerprint
+output_dir = "/runs/guidance/default" # nest related runs: /runs/guidance/15-positions/tag-v1
+predictor_checkpoint = "/runs/train-predictor/predictor-v1/predictor/ensemble_5/model.pt"
+# Existing 20-member ensemble: /runs/train-predictor/predictor-v1/predictor/model.pt
+# For five members: .../predictor/ensemble_5/model.pt
+seed = 42
+device = "cuda"
+
+[guidance]
+control = false # true, or --control, runs the unguided arm and ignores the checkpoint
+method = "tag" # tag or deg
+num_samples = 128 # can override with --num-samples
+batch_size = 32 # final batch is shortened to return exactly num_samples draws
+generator = "esmc_300m" # esm3-open, esmc_300m, esmc_600m
+threshold = 4.1
+generator_temperature = 0.7
+predictor_temperature = 1.0
+
+# Masking: set exactly one of the two below.
+# The 15 sites varied by the si_002 (S2) epistasis library, 1-based. Unlisted
+# positions hold wild type, so draws stay within 15 mutations of CreiLOV.
+mask_positions = [3, 4, 5, 7, 29, 34, 47, 60, 61, 92, 96, 98, 107, 109, 113]
+# mask_fraction = 1.0 # independent random site set per draw; 1.0 masks everything

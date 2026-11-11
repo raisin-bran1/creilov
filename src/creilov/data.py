@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from decimal import Decimal
 import math
 import re
 from collections.abc import Iterator
@@ -166,10 +167,13 @@ def prepare_data(data_dir: Path) -> Path:
     return output
 
 
-def load_dataset(csv_path: Path) -> ProteinDataset:
+def load_dataset(
+    csv_path: Path, *, allowed_libraries: tuple[str, ...] = ("S2",)
+) -> ProteinDataset:
     """Return a standard ProteinDataset with log-mean fluorescence labels.
 
-    Expects the S2-only table produced by prepare_data. Metadata remains in the
+    Defaults to the S2-only table produced by prepare_data. Predictor training
+    explicitly opts into the aligned combined S1/S2 table. Metadata remains in the
     CSV; it is not model conditioning. No normalization, tokenization, masking,
     or splitting is performed.
     """
@@ -178,15 +182,28 @@ def load_dataset(csv_path: Path) -> ProteinDataset:
 
     sequences: list[str] = []
     fitness: list[float] = []
+    seen: set[str] = set()
     with csv_path.open(newline="", encoding="utf-8") as stream:
         for row in csv.DictReader(stream):
-            if row["library"] != "S2":
-                raise ValueError("Expected an S2-only CSV")
+            if row["library"] not in allowed_libraries:
+                if allowed_libraries == ("S2",):
+                    raise ValueError("Expected an S2-only CSV")
+                raise ValueError(f"Unexpected library: {row['library']}")
+            if row["library"] == "S1" and (
+                "fitness_raw" not in row
+                or "log10_alignment_offset" not in row
+                or Decimal(row["fitness_raw"]) + Decimal(row["log10_alignment_offset"])
+                != Decimal(row["fitness"])
+            ):
+                raise ValueError("Expected WT-aligned S1 labels with raw provenance")
             sequence, _, is_stop = reconstruct_sequence(row["mutations"])
             if sequence != row["sequence"] or int(is_stop) != int(row["is_stop"]):
                 raise ValueError(f"Inconsistent sequence in CSV: {row['mutations']}")
             if is_stop or len(sequence) != len(CREILOV_WT):
-                raise ValueError("S2 requires full-length sequences without stops")
+                raise ValueError("Expected full-length sequences without stops")
+            if sequence in seen:
+                raise ValueError("Duplicate sequence in dataset")
+            seen.add(sequence)
             label = float(row["fitness"])
             if not math.isfinite(label):
                 raise ValueError(f"Non-finite fitness: {row['mutations']}")

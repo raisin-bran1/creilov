@@ -1,0 +1,45 @@
+[run]
+stage = "train-predictor"
+root = ".."
+csv_path = "/data/creilov_combined.csv" # unique S2 + WT-aligned S1; sample uniformly
+output_dir = "/runs/train-predictor/default" # /runs mirrors outputs/: <stage>/<run-id>
+seed = 42
+device = "cuda" # Modal GPU
+train_split = "random"
+predictor_ensemble_sizes = [1, 5, 20] # train 20 members once; save nested prefixes
+
+[predictor]
+kind = "one_hot_mlp" # one_hot_mlp, linear_probe, additive
+ensemble_size = 20
+hidden_dim = 400
+hidden_layers = 1
+dropout = 0.1
+backbone = "esmc_300m"
+
+[predictor_training]
+epochs = 30
+batch_size = 128
+learning_rate = 0.001
+weight_decay = 0.01
+patience = 5
+max_train = 2000
+
+[splits]
+train_fraction = 0.8
+validation_fraction = 0.1
+distance_train_max = 7
+distance_validation_max = 8
+activity_train_quantile = 0.8
+activity_validation_quantile = 0.9
+validation_positions = [60]
+test_positions = [98]
+
+# Probability target and residual-variance floor for validation reports.
+[guidance]
+threshold = 4.1
+min_sigma = 0.05
+
+[evaluation]
+mask_fractions = [0.0, 0.5, 0.9]
+top_k = 100
+max_rows = 0

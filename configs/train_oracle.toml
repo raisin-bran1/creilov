@@ -1,0 +1,43 @@
+# Optional fresh oracle training; this does not import the published oracle.
+[run]
+stage = "train-oracle"
+root = ".."
+csv_path = "/data/creilov.csv"
+output_dir = "/runs/train-oracle/default" # /runs mirrors outputs/: <stage>/<run-id>
+seed = 42
+device = "cuda"
+train_split = "random"
+
+[oracle]
+kind = "one_hot_mlp"
+ensemble_size = 10
+hidden_dim = 400
+hidden_layers = 1
+dropout = 0.1
+backbone = "esmc_300m"
+
+[oracle_training]
+epochs = 30
+batch_size = 128
+learning_rate = 0.001
+weight_decay = 0.01
+patience = 5
+max_train = 0 # all training rows; excludes validation and test
+
+[splits]
+train_fraction = 0.8
+validation_fraction = 0.1
+distance_train_max = 7
+distance_validation_max = 8
+activity_train_quantile = 0.8
+activity_validation_quantile = 0.9
+validation_positions = [60]
+test_positions = [98]
+
+[guidance]
+threshold = 4.1
+min_sigma = 0.05
+
+[evaluation]
+top_k = 100
+max_rows = 0

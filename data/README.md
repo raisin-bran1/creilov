@@ -16,8 +16,8 @@ From the project root, regenerate `data/creilov.csv` with:
 uv run python -m creilov.data data
 ```
 
-The converter reads **S2 only** using the Python standard library. S1 remains
-archived and is not processed. It preserves all 165,428 S2 records, their order,
+The default converter reads **S2 only** using the Python standard library.
+S1 is handled by the separate export below. It preserves all 165,428 S2 records, their order,
 and original numeric values. It does not modify either workbook.
 Raw and generated data are ignored by Git; this documentation and converter
 are versioned.
@@ -115,3 +115,62 @@ For masking augmentation use `uniform_mask_noise(model.tokenizer)` and
 `uniform_time`: positions are independently masked with probability `1 - t`.
 The regression labels stay unchanged. `target_ids` are original sequence tokens,
 not the regression targets; the latter are in `labels`.
+
+## Separately aligned S1 export
+
+```powershell
+uv run python -m creilov.s1 data
+```
+
+This creates `creilov_s1_aligned.csv` and its provenance sidecar,
+`creilov_s1_aligned.json`. It does not rewrite `creilov.csv`, either workbook,
+or any training/benchmark configuration. The existing benchmark loader continues
+to require S2-only data. Predictor training uses the separate combined pool below.
+
+The alignment follows Yang et al., Appendix A.2:
+https://arxiv.org/html/2505.15093#A2
+
+```text
+fitness_aligned = fitness_S1_raw + (fitness_S2_WT - fitness_S1_WT)
+                = fitness_S1_raw - approximately 0.147130161
+```
+
+The exporter uses the original decimal strings so that the aligned S1 WT equals
+the S2 CSV WT exactly. This shift applies only to the regression label, `fitness`.
+`fitness_raw` stores the original S1 log10-of-mean value. The replicate columns,
+`mean`, and `log_rep*` remain raw S1 measurements, not aligned values.
+
+The CSV contains 2,122 full-length records: WT and 2,121 single substitutions.
+The 63 premature-stop records remain in the raw workbook and are excluded from
+this fixed-length model dataset. Of the exported records, 20 also occur in S2
+(including WT); `overlaps_s2 = 1` flags these. A future merged dataset should
+prefer S2 for shared sequences, leaving 2,102 additional S1-only sequences.
+Do not randomly split duplicate sequences from the two libraries into different
+partitions. Preserve the S2 split manifests when evaluating existing benchmarks.
+
+Additional columns are `fitness_raw`, `log10_alignment_offset`, and `overlaps_s2`;
+the other columns follow the table above, with `library = S1`. The JSON sidecar
+records WT values, the exact offset, counts, input/output SHA256 checksums,
+the method reference, and agreement on the 20 shared sequences. WT alignment
+does not eliminate all assay differences: their residual RMSE is approximately
+0.1402 log10 units after alignment.
+
+## Combined predictor pool
+
+```powershell
+uv run python -m creilov.combined data
+```
+
+`creilov_combined.csv` contains the original 165,428 S2 sequences in their
+original order, followed by 2,102 additional full-length S1 sequences using their
+aligned `fitness` labels. S2 measurements win for the 20 shared sequences.
+The two input CSVs are unchanged. `creilov_combined.json` records counts,
+deduplication policy, and input/output SHA256 hashes. Alignment is checked
+against the current S2 WT before combining.
+
+Predictor training explicitly permits both libraries and uniformly samples its
+configured training budget from the chosen split's training partition. This is
+uniform per sequence, not a 50/50 library mixture. A 2,000-row draw has about
+25 S1-only sequences on average; the actual fixed-seed selection is recorded in
+the checkpoint metadata. Benchmark/oracle use the default S2-only loader and
+reject the combined pool. Sequences are deduplicated before any partitioning.

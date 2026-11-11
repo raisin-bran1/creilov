@@ -1,0 +1,13 @@
+[run]
+stage = "evaluate"
+root = ".."
+csv_path = "/data/creilov_combined.csv" # unused: evaluation scores the library directly
+library_path = "/runs/guidance/15-positions/control/library.fasta" # also accepts library.csv
+# Ported ProteinGuide (Yang et al.) oracle, see docs/proteinguide_oracle_port.md.
+oracle_checkpoint = "/runs/train-oracle/oracle-proteinguide/oracle/model.pt"
+predictor_checkpoint = "/runs/train-predictor/predictor-v1/predictor/ensemble_5/model.pt"
+output_dir = "/runs/guidance/full-unmask/control" # unused: scores are written into the library's own run
+device = "cuda" # runs on Modal
+seed = 42
+scoring_batch_size = 32
+histogram_bins = 30

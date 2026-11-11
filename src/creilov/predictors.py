@@ -4,7 +4,7 @@ Index legend: B batch, P token position (includes BOS/EOS), V vocabulary,
 D contextual embedding dimension, M ensemble member, O output.
 """
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 
 import torch
@@ -92,23 +92,48 @@ class FluorescenceEnsemble(PredictiveModel):
     ensemble variance and permits one-member models; it is not an OOD guarantee.
     """
 
-    def __init__(self, cfg: ModelConfig, length: int, min_sigma: float):
+    def __init__(
+        self,
+        cfg: ModelConfig,
+        length: int,
+        min_sigma: float,
+        *,
+        members: list[PredictiveModel] | None = None,
+    ):
         tokenizer = EsmSequenceTokenizer()
         tokenizer.mask_token_id = tokenizer.vocab["<mask>"]
         super().__init__(tokenizer)
         self.config = cfg
         self.length = length
         self.min_sigma = min_sigma
-        backbone = load_backbone(cfg.backbone) if cfg.kind == "linear_probe" else None
-        self.members = nn.ModuleList(
-            [
+        if members is None:
+            backbone = (
+                load_backbone(cfg.backbone) if cfg.kind == "linear_probe" else None
+            )
+            members = [
                 make_member(cfg, tokenizer, length, backbone)
                 for _ in range(cfg.ensemble_size)
             ]
-        )
+        if len(members) != cfg.ensemble_size:
+            raise ValueError("Member count must match ensemble_size")
+        self.members = nn.ModuleList(members)
         self.register_buffer("label_mean", torch.tensor(0.0))  # scalar
         self.register_buffer("label_scale", torch.tensor(1.0))  # scalar
         self.register_buffer("residual_variance", torch.tensor(min_sigma**2))  # scalar
+
+    def prefix(self, size: int) -> "FluorescenceEnsemble":
+        """Share the first trained members, with independent calibration buffers."""
+        if not 1 <= size <= len(self.members):
+            raise ValueError("Prefix size must be within the trained ensemble")
+        prefix = FluorescenceEnsemble(
+            replace(self.config, ensemble_size=size),
+            self.length,
+            self.min_sigma,
+            members=list(self.members[:size]),
+        ).to(self.device)
+        prefix.label_mean.copy_(self.label_mean)
+        prefix.label_scale.copy_(self.label_scale)
+        return prefix.eval()
 
     def member_predictions(self, ohe):
         if self.config.kind == "linear_probe":
@@ -132,6 +157,33 @@ class FluorescenceEnsemble(PredictiveModel):
 
     def format_raw_to_logits(self, raw, seq, **kwargs):
         return gaussian_binary_logits(raw[:, 0], raw[:, 1], float(self.target))
+
+
+class ControlPredictor(PredictiveModel):
+    """Uninformative predictor for an unguided control arm.
+
+    Returns equal binary logits for every sequence, so log p(target | x) is
+    log 0.5 everywhere and its input gradient is exactly zero. TAG then adds a
+    zero delta and DEG adds a constant across the scored position's tokens,
+    both of which leave the generator's distribution untouched. Guidance still
+    runs through the same sampler, so a control library shares the generator's
+    reveal order and token draws with a guided run at the same seed.
+    """
+
+    def __init__(self):
+        tokenizer = EsmSequenceTokenizer()
+        tokenizer.mask_token_id = tokenizer.vocab["<mask>"]
+        super().__init__(tokenizer)
+        # ProbabilityModel.device reads a parameter, and the zero weight keeps
+        # the output attached to the autograd graph so grad_log_prob can run.
+        self.zero_weight = nn.Parameter(torch.zeros(1), requires_grad=False)
+
+    def forward(self, ohe):
+        attached = ohe.flatten(1).sum(-1) * self.zero_weight  # [B] - always zero
+        return torch.stack([attached, attached], -1)  # [B, 2] - binary logits
+
+    def format_raw_to_logits(self, raw, seq, **kwargs):
+        return raw  # [false, true] are already equal
 
 
 def save_checkpoint(model: FluorescenceEnsemble, path: Path, metadata: dict) -> None:
